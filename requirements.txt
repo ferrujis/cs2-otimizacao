@@ -1,0 +1,7 @@
+# Python dependencies for alcesboost
+# Tkinter is included with standard library
+psutil
+matplotlib
+customtkinter
+Pillow
+pyinstaller
