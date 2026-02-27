@@ -1,4 +1,4 @@
-import tkinter as tk
+﻿import tkinter as tk
 from tkinter import messagebox
 import customtkinter as ctk
 import psutil
@@ -166,28 +166,21 @@ class AlcesBoostApp(ctk.CTk):
         content_frame = self._styled_panel(parent)
         content_frame.pack(fill="both", expand=True, padx=12, pady=12)
 
-        canvas = tk.Canvas(
+        # create a scrollable region for options; avoid using "transparent"
+        # for scrollbar buttons since customtkinter's scrollbar widget doesn't
+        # allow transparency on those attributes (raises ValueError).  Instead
+        # rely on the default colors or match the panel color so the buttons
+        # are effectively invisible.
+        scroll_frame = ctk.CTkScrollableFrame(
             content_frame,
-            bg=self.style.colors["panel"],
-            highlightthickness=0,
-            bd=0,
+            fg_color=self.style.colors["panel"],
+            # scrollbar_button_color and _hover_color are left unspecified so
+            # defaults from the theme are used.  You can override them with a
+            # solid color (e.g. self.style.colors['panel']) if you wish.
         )
-        scroll = ctk.CTkScrollbar(content_frame, orientation="vertical", command=canvas.yview)
+        scroll_frame.pack(fill="both", expand=True)
 
-        inner = ctk.CTkFrame(canvas, fg_color=self.style.colors["panel"])
-
-        def on_config(_event):
-            canvas.configure(scrollregion=canvas.bbox("all"))
-
-        inner.bind("<Configure>", on_config)
-
-        canvas.create_window((0, 0), window=inner, anchor="nw")
-        canvas.configure(yscrollcommand=scroll.set)
-
-        canvas.pack(side="left", fill="both", expand=True, padx=(2, 0), pady=2)
-        scroll.pack(side="right", fill="y", pady=2, padx=(0, 2))
-
-        return inner
+        return scroll_frame
 
     def _build_option_rows(self, parent, config, vars_dict):
         for name, info in config.items():
@@ -249,8 +242,16 @@ class AlcesBoostApp(ctk.CTk):
         self._styled_button(info_panel, "Atualizar Métricas", self.refresh_system_metrics).pack(
             padx=10, pady=(0, 10), anchor="w"
         )
+        # allow the user to explicitly check for various buffers
+        self._styled_button(info_panel, "Verificar Buffers", self.check_buffers).pack(
+            padx=10, pady=(0, 10), anchor="w"
+        )
 
         self.tweaks_config = {
+            "🎮 MODO ZERO INPUT LAG": {
+                "desc": "Aplica TODOS os tweaks para eliminar input lag (Prioridade, Desabilitar Aero, Offload, TCP NoDelay, Superfetch, Hibernação, Full Screen Opt)",
+                "func": self.tweak_zero_input_lag,
+            },
             "Prioridade Alta": {
                 "desc": "Define o processo CS2 como alta prioridade no sistema operacional",
                 "func": self.tweak_high_priority,
@@ -267,9 +268,17 @@ class AlcesBoostApp(ctk.CTk):
                 "desc": "Desabilita algoritmo Nagle para reduzir latência na rede",
                 "func": self.tweak_tcp_nodelay,
             },
-            "Aumentar Buffer UDP": {
-                "desc": "Aumenta tamanho dos buffers UDP para melhor recebimento de pacotes",
-                "func": self.tweak_udp_buffer,
+            "MMCSS Latência (Gaming)": {
+                "desc": "Ajusta perfil multimídia do Windows para reduzir latência em jogos",
+                "func": self.tweak_mmcss_latency,
+            },
+            "Scheduler Prioritário": {
+                "desc": "Aumenta prioridade de apps em foreground para menor input lag",
+                "func": self.tweak_scheduler_priority,
+            },
+            "Timer Dinâmico Off": {
+                "desc": "Desabilita dynamic tick para estabilizar frametime (requer reiniciar)",
+                "func": self.tweak_disable_dynamic_tick,
             },
             "Desabilitar Superfetch": {
                 "desc": "Desabilita SysMain para reduzir uso de disco e melhorar frametime",
@@ -287,10 +296,6 @@ class AlcesBoostApp(ctk.CTk):
                 "desc": "Desabilita otimizações de tela cheia que causam stutter",
                 "func": self.tweak_full_screen_opt,
             },
-            "Aumentar Virtual Memory": {
-                "desc": "Aumenta memória virtual para maior espaço em cache",
-                "func": self.tweak_virtual_memory,
-            },
         }
 
         tweaks_area = self._make_scroll_area(frame)
@@ -303,16 +308,33 @@ class AlcesBoostApp(ctk.CTk):
         self.refresh_system_metrics()
 
     def refresh_system_metrics(self):
-        """Atualiza métricas de CPU, memória e tempo de boot."""
+        """Atualiza métricas de CPU, memória, boot e atividade de buffers.
+
+        O texto exibido na caixa informa uso de CPU/memória, hora do boot e uma
+        estimativa básica da taxa de transferência de rede para que o usuário
+        possa perceber se há "buffering" em andamento.
+        """
         try:
             cpu = psutil.cpu_percent(interval=1)
             mem = psutil.virtual_memory()
             boot = datetime.fromtimestamp(psutil.boot_time())
 
+            # calculate simple network throughput over 1s interval
+            try:
+                net_before = psutil.net_io_counters()
+                psutil.cpu_percent(interval=1)  # short sleep
+                net_after = psutil.net_io_counters()
+                sent = (net_after.bytes_sent - net_before.bytes_sent) / 1024
+                recv = (net_after.bytes_recv - net_before.bytes_recv) / 1024
+                net_info = f" | NET: {sent:.1f} KB/s ↑ {recv:.1f} KB/s ↓"
+            except Exception:
+                net_info = ""
+
             info = (
                 f"CPU: {cpu:.1f}% | "
                 f"Memória: {mem.percent:.1f}% ({mem.used // (1024**2)} MB / {mem.total // (1024**2)} MB) | "
                 f"Boot: {boot.strftime('%Y-%m-%d %H:%M:%S')}"
+                f"{net_info}"
             )
 
             self.sys_text.configure(state="normal")
@@ -340,6 +362,116 @@ class AlcesBoostApp(ctk.CTk):
                 results.append(f"✗ {tweak_name}: Erro - {str(e)}")
 
         messagebox.showinfo("Resultado", "\n".join(results))
+        self.refresh_system_metrics()
+            
+    def check_buffers(self):
+        """Faz uma checagem rápida de buffers de rede e vídeo.
+
+        Não existe uma API única para "buffers" em todos os subsistemas, então
+        reunimos algumas métricas úteis e avisamos o usuário se houver algum
+        sinal de atividade.  A intenção é servir como ponto de partida; você
+        pode estender as verificações conforme necessário.
+        """
+        info_lines = []
+
+        # rede: taxa de transferência instantânea
+        try:
+            before = psutil.net_io_counters()
+            psutil.cpu_percent(interval=1)  # breve espera
+            after = psutil.net_io_counters()
+            sent = (after.bytes_sent - before.bytes_sent) / 1024
+            recv = (after.bytes_recv - before.bytes_recv) / 1024
+            if sent > 0 or recv > 0:
+                info_lines.append(f"Atividade de rede: {sent:.1f} KB/s ↑ {recv:.1f} KB/s ↓")
+            else:
+                info_lines.append("Nenhuma atividade de rede detectada.")
+        except Exception:
+            info_lines.append("Erro ao avaliar rede.")
+
+        # tentativa de obter uso de memória de vídeo via nvidia-smi
+        try:
+            import subprocess
+
+            proc = subprocess.run(
+                ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            if proc.returncode == 0:
+                for idx, line in enumerate(proc.stdout.splitlines()):
+                    line = line.strip()
+                    if line and line != "0":
+                        info_lines.append(f"GPU {idx} memória usada: {line} MiB")
+        except Exception:
+            # nvidia-smi might not exist (non-NVIDIA hardware) – ignore
+            pass
+
+        # memória do sistema: buffers/cache quando disponível
+        try:
+            vm = psutil.virtual_memory()
+            buf = getattr(vm, "buffers", None)
+            cached = getattr(vm, "cached", None)
+            if buf is not None or cached is not None:
+                info_lines.append(f"Memória: buffers={buf} cached={cached}")
+        except Exception:
+            pass
+
+        if not info_lines:
+            info_lines.append("Não foi possível detectar nenhum buffer específico.")
+
+        messagebox.showinfo("Verificação de Buffers", "\n".join(info_lines))
+
+    def tweak_zero_input_lag(self):
+        """Aplica todos os tweaks para zero input lag de uma vez."""
+        if sys.platform.startswith("win"):
+            try:
+                # Tweaks básicos
+                self.tweak_high_priority()
+                self.tweak_power_plan()
+                self.tweak_disable_offload()
+                self.tweak_tcp_nodelay()
+                self.tweak_mmcss_latency()
+                self.tweak_scheduler_priority()
+                self.tweak_disable_dynamic_tick()
+                self.tweak_disable_superfetch()
+                self.tweak_disable_aero()
+                self.tweak_disable_hibernation()
+                self.tweak_full_screen_opt()
+                
+                # Tweaks avançados para zero input lag
+                # Desabilitar animações do Windows
+                os.system(
+                    'reg add "HKCU\\Control Panel\\Desktop" /v "UserPreferencesMask" '
+                    "/t REG_BINARY /d 90120100 /f"
+                )
+                
+                # Desabilitar transição visual
+                os.system(
+                    'reg add "HKCU\\Control Panel\\Desktop" /v "MenuShowDelay" '
+                    "/t REG_DWORD /d 0 /f"
+                )
+                
+                # Desabilitar search indexing
+                os.system('net stop "WSearch"')
+                os.system('sc config "WSearch" start= disabled')
+                
+                # Desabilitar mouse precision boost (aim assist)
+                os.system(
+                    'reg add "HKCU\\Control Panel\\Mouse" /v "MouseSpeed" '
+                    "/t REG_SZ /d 0 /f"
+                )
+                os.system(
+                    'reg add "HKCU\\Control Panel\\Mouse" /v "MouseThreshold1" '
+                    "/t REG_SZ /d 0 /f"
+                )
+                os.system(
+                    'reg add "HKCU\\Control Panel\\Mouse" /v "MouseThreshold2" '
+                    "/t REG_SZ /d 0 /f"
+                )
+                
+            except Exception as e:
+                raise Exception(f"Erro ao aplicar MODO ZERO INPUT LAG: {str(e)}")
 
     def tweak_high_priority(self):
         """Define processo como alta prioridade."""
@@ -374,19 +506,63 @@ class AlcesBoostApp(ctk.CTk):
                     'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters" '
                     "/v TcpNoDelay /t REG_DWORD /d 1 /f"
                 )
+                os.system(
+                    'powershell -Command "Get-ChildItem '
+                    '\'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\' | '
+                    'ForEach-Object {'
+                    "New-ItemProperty -Path $_.PsPath -Name TcpAckFrequency -Value 1 -PropertyType DWord -Force | Out-Null; "
+                    "New-ItemProperty -Path $_.PsPath -Name TCPNoDelay -Value 1 -PropertyType DWord -Force | Out-Null; "
+                    "New-ItemProperty -Path $_.PsPath -Name TcpDelAckTicks -Value 0 -PropertyType DWord -Force | Out-Null"
+                    '}"'
+                )
             except Exception:
                 raise Exception("Permissão de admin necessária para modificar registro TCP")
 
-    def tweak_udp_buffer(self):
-        """Aumenta buffer UDP."""
+    def tweak_mmcss_latency(self):
+        """Ajusta MMCSS para perfil de menor latência em jogos."""
         if sys.platform.startswith("win"):
             try:
                 os.system(
-                    'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters" '
-                    "/v DefaultRcvWindow /t REG_DWORD /d 65536 /f"
+                    'reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile" '
+                    "/v NetworkThrottlingIndex /t REG_DWORD /d 4294967295 /f"
+                )
+                os.system(
+                    'reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile" '
+                    "/v SystemResponsiveness /t REG_DWORD /d 0 /f"
+                )
+                os.system(
+                    'reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile\\Tasks\\Games" '
+                    '/v "GPU Priority" /t REG_DWORD /d 8 /f'
+                )
+                os.system(
+                    'reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile\\Tasks\\Games" '
+                    '/v "Priority" /t REG_DWORD /d 6 /f'
+                )
+                os.system(
+                    'reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile\\Tasks\\Games" '
+                    '/v "Scheduling Category" /t REG_SZ /d High /f'
                 )
             except Exception:
-                raise Exception("Permissão de admin necessária para modificar buffers UDP")
+                raise Exception("Permissão de admin necessária para ajustar MMCSS")
+
+    def tweak_scheduler_priority(self):
+        """Ajusta scheduler para favorecer aplicativos em primeiro plano."""
+        if sys.platform.startswith("win"):
+            try:
+                os.system(
+                    'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\PriorityControl" '
+                    "/v Win32PrioritySeparation /t REG_DWORD /d 38 /f"
+                )
+            except Exception:
+                raise Exception("Permissão de admin necessária para ajustar scheduler")
+
+    def tweak_disable_dynamic_tick(self):
+        """Desabilita dynamic tick para reduzir variação de frametime (requer reboot)."""
+        if sys.platform.startswith("win"):
+            try:
+                os.system("bcdedit /set disabledynamictick yes")
+            except Exception:
+                raise Exception("Permissão de admin necessária para ajustar timer")
 
     def tweak_disable_superfetch(self):
         """Desabilita SysMain (Superfetch) para liberar disco e RAM."""
@@ -429,14 +605,6 @@ class AlcesBoostApp(ctk.CTk):
                 )
             except Exception:
                 raise Exception("Erro ao desabilitar Full Screen Optimizations")
-
-    def tweak_virtual_memory(self):
-        """Aumenta memória virtual para melhor cache."""
-        if sys.platform.startswith("win"):
-            try:
-                os.system('wmic pagefileset where name="C:\\\\pagefile.sys" set InitialSize=12000,MaximumSize=12000')
-            except Exception:
-                raise Exception("Erro ao ajustar virtual memory")
 
     def cleanup_cs2_shaders(self):
         """Remove cache de shaders do CS2."""
