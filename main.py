@@ -6,6 +6,7 @@ import os
 import sys
 import ctypes
 import shutil
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -29,6 +30,8 @@ class AlcesBoostApp(ctk.CTk):
         self.configure(fg_color=self.style.colors["bg"])
         self.base_dir = Path(__file__).resolve().parent
         self.header_logo = None
+        self._last_net_counters = None
+        self._last_net_ts = None
         self._set_app_icon()
 
         self.check_admin()
@@ -249,7 +252,7 @@ class AlcesBoostApp(ctk.CTk):
 
         self.tweaks_config = {
             "🎮 MODO ZERO INPUT LAG": {
-                "desc": "Aplica TODOS os tweaks para eliminar input lag (Prioridade, Desabilitar Aero, Offload, TCP NoDelay, Superfetch, Hibernação, Full Screen Opt)",
+                "desc": "Aplica TODOS os tweaks para eliminar input lag e microstutter (Prioridade, Energia, MMCSS, Dynamic Tick, SysMain, Game Mode/DVR)",
                 "func": self.tweak_zero_input_lag,
             },
             "Prioridade Alta": {
@@ -296,6 +299,10 @@ class AlcesBoostApp(ctk.CTk):
                 "desc": "Desabilita otimizações de tela cheia que causam stutter",
                 "func": self.tweak_full_screen_opt,
             },
+            "Game Mode + DVR Off": {
+                "desc": "Força Game Mode e desabilita capturas/Game DVR para reduzir stutter",
+                "func": self.tweak_game_mode_and_dvr,
+            },
         }
 
         tweaks_area = self._make_scroll_area(frame)
@@ -315,20 +322,30 @@ class AlcesBoostApp(ctk.CTk):
         possa perceber se há "buffering" em andamento.
         """
         try:
-            cpu = psutil.cpu_percent(interval=1)
+            cpu = psutil.cpu_percent(interval=0.2)
             mem = psutil.virtual_memory()
             boot = datetime.fromtimestamp(psutil.boot_time())
 
-            # calculate simple network throughput over 1s interval
+            # cálculo não bloqueante de throughput de rede
             try:
-                net_before = psutil.net_io_counters()
-                psutil.cpu_percent(interval=1)  # short sleep
-                net_after = psutil.net_io_counters()
-                sent = (net_after.bytes_sent - net_before.bytes_sent) / 1024
-                recv = (net_after.bytes_recv - net_before.bytes_recv) / 1024
-                net_info = f" | NET: {sent:.1f} KB/s ↑ {recv:.1f} KB/s ↓"
+                import time
+
+                now = time.time()
+                current = psutil.net_io_counters()
+                if self._last_net_counters is not None and self._last_net_ts is not None:
+                    elapsed = max(now - self._last_net_ts, 0.001)
+                    sent = (current.bytes_sent - self._last_net_counters.bytes_sent) / elapsed / 1024
+                    recv = (current.bytes_recv - self._last_net_counters.bytes_recv) / elapsed / 1024
+                    net_info = f" | NET: {sent:.1f} KB/s ↑ {recv:.1f} KB/s ↓"
+                else:
+                    net_info = ""
+
+                self._last_net_counters = current
+                self._last_net_ts = now
             except Exception:
                 net_info = ""
+
+            cs2_info = self._get_cs2_memory_summary()
 
             info = (
                 f"CPU: {cpu:.1f}% | "
@@ -336,6 +353,9 @@ class AlcesBoostApp(ctk.CTk):
                 f"Boot: {boot.strftime('%Y-%m-%d %H:%M:%S')}"
                 f"{net_info}"
             )
+
+            if cs2_info:
+                info = f"{info} | {cs2_info}"
 
             self.sys_text.configure(state="normal")
             self.sys_text.delete("1.0", "end")
@@ -438,6 +458,7 @@ class AlcesBoostApp(ctk.CTk):
                 self.tweak_disable_aero()
                 self.tweak_disable_hibernation()
                 self.tweak_full_screen_opt()
+                self.tweak_game_mode_and_dvr()
                 
                 # Tweaks avançados para zero input lag
                 # Desabilitar animações do Windows
@@ -475,10 +496,23 @@ class AlcesBoostApp(ctk.CTk):
 
     def tweak_high_priority(self):
         """Define processo como alta prioridade."""
-        p = psutil.Process(os.getpid())
         if sys.platform.startswith("win"):
-            p.nice(psutil.HIGH_PRIORITY_CLASS)
+            cs2_processes = self._find_cs2_processes()
+            if not cs2_processes:
+                raise Exception("CS2 não está em execução (cs2.exe)")
+
+            adjusted = 0
+            for process in cs2_processes:
+                try:
+                    process.nice(psutil.HIGH_PRIORITY_CLASS)
+                    adjusted += 1
+                except Exception:
+                    pass
+
+            if adjusted == 0:
+                raise Exception("Não foi possível ajustar prioridade do CS2")
         else:
+            p = psutil.Process(os.getpid())
             p.nice(-10)
 
     def tweak_power_plan(self):
@@ -605,6 +639,28 @@ class AlcesBoostApp(ctk.CTk):
                 )
             except Exception:
                 raise Exception("Erro ao desabilitar Full Screen Optimizations")
+
+    def tweak_game_mode_and_dvr(self):
+        """Ajusta Game Mode e desabilita Game DVR/Capturas para reduzir stutter."""
+        if sys.platform.startswith("win"):
+            try:
+                os.system(
+                    'reg add "HKCU\\Software\\Microsoft\\GameBar" /v "AllowAutoGameMode" /t REG_DWORD /d 1 /f'
+                )
+                os.system(
+                    'reg add "HKCU\\Software\\Microsoft\\GameBar" /v "AutoGameModeEnabled" /t REG_DWORD /d 1 /f'
+                )
+                os.system(
+                    'reg add "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\GameDVR" /v "AppCaptureEnabled" /t REG_DWORD /d 0 /f'
+                )
+                os.system(
+                    'reg add "HKCU\\System\\GameConfigStore" /v "GameDVR_Enabled" /t REG_DWORD /d 0 /f'
+                )
+                os.system(
+                    'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR" /v "AllowGameDVR" /t REG_DWORD /d 0 /f'
+                )
+            except Exception:
+                raise Exception("Erro ao ajustar Game Mode/Game DVR")
 
     def cleanup_cs2_shaders(self):
         """Remove cache de shaders do CS2."""
@@ -844,9 +900,88 @@ class AlcesBoostApp(ctk.CTk):
             gc.collect()
 
             if sys.platform.startswith("win"):
-                os.system("del /Q /F C:\\Windows\\Temp\\*.*")
+                trimmed_count = 0
+
+                if self._trim_working_set(os.getpid()):
+                    trimmed_count += 1
+
+                for process in self._find_cs2_processes():
+                    if self._trim_working_set(process.pid):
+                        trimmed_count += 1
+
+                standby_cleared = self._clear_standby_list()
+
+                if not standby_cleared and trimmed_count == 0:
+                    raise Exception(
+                        "Não foi possível otimizar RAM (EmptyStandbyList.exe ausente e trim indisponível)"
+                    )
         except Exception:
             raise Exception("Erro ao otimizar memória")
+
+    def _find_cs2_processes(self):
+        processes = []
+        for process in psutil.process_iter(["name"]):
+            try:
+                name = (process.info.get("name") or "").lower()
+                if name == "cs2.exe" or name == "cs2":
+                    processes.append(process)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+        return processes
+
+    def _get_cs2_memory_summary(self):
+        total_rss = 0
+        process_count = 0
+        for process in self._find_cs2_processes():
+            try:
+                total_rss += process.memory_info().rss
+                process_count += 1
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+
+        if process_count == 0:
+            return "CS2: fechado"
+
+        return f"CS2 RAM: {total_rss // (1024**2)} MB ({process_count} proc)"
+
+    def _trim_working_set(self, pid):
+        try:
+            PROCESS_QUERY_INFORMATION = 0x0400
+            PROCESS_SET_QUOTA = 0x0100
+            process_handle = ctypes.windll.kernel32.OpenProcess(
+                PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA,
+                False,
+                int(pid),
+            )
+            if not process_handle:
+                return False
+
+            result = ctypes.windll.psapi.EmptyWorkingSet(process_handle)
+            ctypes.windll.kernel32.CloseHandle(process_handle)
+            return bool(result)
+        except Exception:
+            return False
+
+    def _clear_standby_list(self):
+        candidates = [
+            self.base_dir / "EmptyStandbyList.exe",
+            self.base_dir / "tools" / "EmptyStandbyList.exe",
+        ]
+
+        tool_path = next((path for path in candidates if path.exists()), None)
+        if tool_path is None:
+            return False
+
+        try:
+            process = subprocess.run(
+                [str(tool_path), "standbylist"],
+                capture_output=True,
+                text=True,
+                timeout=8,
+            )
+            return process.returncode == 0
+        except Exception:
+            return False
 
     def find_large_files(self):
         """Encontra arquivos grandes não utilizados."""
