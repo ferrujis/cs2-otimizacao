@@ -5,3 +5,5 @@ matplotlib
 customtkinter
 Pillow
 pyinstaller
+wmi
+platform
