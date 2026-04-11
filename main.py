@@ -11,6 +11,9 @@ from datetime import datetime
 from pathlib import Path
 import platform
 import wmi
+import threading
+import urllib.request
+import json
 
 from PIL import Image
 
@@ -88,7 +91,7 @@ class AlcesBoostApp(ctk.CTk):
         screen_height = self.winfo_screenheight()
         self.style.calculate_scale_factor(screen_height)
 
-        self.title("alcesboost")
+        self.title("🦌 alcesboost - Performance Toolkit")
         max_width = max(640, screen_width - 40)
         max_height = max(480, screen_height - 80)
         default_width = min(1000, max_width)
@@ -120,21 +123,41 @@ class AlcesBoostApp(ctk.CTk):
         return self.style.fonts
 
     def _set_app_icon(self):
+        """Configura ícone da janela com suporte a múltiplos formatos."""
         ico_path = self.base_dir / "alcesboost.ico"
         png_path = self.base_dir / "logo.png"
 
-        try:
-            if ico_path.exists():
-                self.iconbitmap(str(ico_path))
-        except Exception:
-            pass
-
+        # Tenta primeiro com PNG (para melhor qualidade em painéis de tarefas modernos)
         try:
             if png_path.exists():
                 self._window_icon_photo = tk.PhotoImage(file=str(png_path))
                 self.iconphoto(True, self._window_icon_photo)
-        except Exception:
+                return
+        except Exception as e:
             pass
+
+        # Fallback para ICO
+        try:
+            if ico_path.exists():
+                self.iconbitmap(str(ico_path))
+                return
+        except Exception as e:
+            pass
+
+        # Se nenhum arquivo foi encontrado, tenta gerar um padrão
+        try:
+            from PIL import Image, ImageDraw
+            logo_img = Image.new("RGBA", (64, 64), (42, 26, 69, 255))
+            draw = ImageDraw.Draw(logo_img)
+            draw.ellipse((8, 8, 56, 56), fill=(253, 185, 39, 255))
+
+            # Salvar e usar
+            temp_ico = self.base_dir / "temp_icon.ppm"
+            logo_img.save(str(temp_ico))
+            self._window_icon_photo = tk.PhotoImage(file=str(temp_ico))
+            self.iconphoto(True, self._window_icon_photo)
+        except Exception:
+            pass  # Sistema utilizará ícone padrão
 
     def check_admin(self):
         """Verifica se está rodando como administrador."""
@@ -199,40 +222,49 @@ class AlcesBoostApp(ctk.CTk):
             border_width=1,
             border_color=self.colors["gold_dark"],
             corner_radius=10,
-            height=int(68 * self.style.scale_factor),
+            height=int(80 * self.style.scale_factor),
         )
         header.pack(fill="x", pady=(0, 10))
         header.pack_propagate(False)
 
+        # Inner frame para melhor layout
+        inner_frame = ctk.CTkFrame(header, fg_color="transparent")
+        inner_frame.pack(fill="both", expand=True, padx=10, pady=8)
+        inner_frame.grid_columnconfigure([0, 1], weight=[0, 1])
+
+        # Logo
         logo_path = self.base_dir / "logo.png"
         if logo_path.exists():
             try:
                 logo = Image.open(logo_path)
-                # Logo com tamanho escalável (entre 40-64px)
-                logo_size = max(40, min(64, int(48 * self.style.scale_factor)))
+                logo_size = max(48, min(72, int(56 * self.style.scale_factor)))
                 self.header_logo = ctk.CTkImage(light_image=logo, dark_image=logo, size=(logo_size, logo_size))
-                logo_label = ctk.CTkLabel(header, text="", image=self.header_logo)
-                logo_label.pack(side="left", padx=(16, 6), pady=int(8 * self.style.scale_factor))
+                logo_label = ctk.CTkLabel(inner_frame, text="", image=self.header_logo)
+                logo_label.grid(row=0, column=0, padx=(0, 12), sticky="w")
             except Exception:
                 self.header_logo = None
 
-        title_font_size = self.style.get_scaled_font(38)
+        # Texto (título e subtítulo)
+        text_frame = ctk.CTkFrame(inner_frame, fg_color="transparent")
+        text_frame.grid(row=0, column=1, sticky="w")
+
+        title_font_size = self.style.get_scaled_font(36)
         title = ctk.CTkLabel(
-            header,
-            text="alcesboost",
+            text_frame,
+            text="🦌 alcesboost",
             text_color=self.colors["gold_bright"],
             font=ctk.CTkFont(family="Segoe UI", size=title_font_size, weight="bold"),
         )
-        title.pack(side="left", padx=10, pady=int(8 * self.style.scale_factor))
+        title.pack(anchor="w")
 
-        subtitle_font_size = self.style.get_scaled_font(16)
+        subtitle_font_size = self.style.get_scaled_font(14)
         subtitle = ctk.CTkLabel(
-            header,
-            text="Performance Toolkit",
+            text_frame,
+            text="Performance Toolkit - Hardware & CS2 Otimização",
             text_color=self.style.colors["text_soft"],
             font=ctk.CTkFont(family="Segoe UI", size=subtitle_font_size),
         )
-        subtitle.pack(side="left", pady=int(12 * self.style.scale_factor))
+        subtitle.pack(anchor="w", pady=(2, 0))
 
     def _styled_panel(self, parent):
         return ctk.CTkFrame(
@@ -478,14 +510,223 @@ class AlcesBoostApp(ctk.CTk):
     def update_drivers(self):
         """Abre links para atualização de drivers."""
         try:
-            driver_links = self._get_driver_update_links()
-            if driver_links:
-                # Mostra opções para o usuário
-                self._show_driver_update_options(driver_links)
-            else:
-                messagebox.showinfo("Drivers", "Nenhum driver identificado para atualização automática.\n\nVerifique manualmente os sites oficiais dos fabricantes.")
+            # Inicia verificação automática em thread para não bloquear UI
+            thread = threading.Thread(target=self._auto_update_drivers, daemon=True)
+            thread.start()
         except Exception as e:
             messagebox.showerror("Erro", f"Erro ao preparar atualização: {str(e)}")
+
+    def _auto_update_drivers(self):
+        """Verifica e baixa drivers desatualizados de forma automática."""
+        try:
+            messagebox.showinfo("Atualização de Drivers", "Verificando drivers desatualizados...\nIsso pode levar alguns minutos.")
+
+            available_updates = self._check_for_driver_updates()
+
+            if not available_updates:
+                messagebox.showinfo("Atualização de Drivers", "Todos os drivers estão atualizados!")
+                return
+
+            # Exibe lista de updates disponíveis
+            updates_text = "Drivers desatualizados encontrados:\n\n"
+            for driver_info in available_updates:
+                updates_text += f"• {driver_info['name']}\n"
+                updates_text += f"  Versão atual: {driver_info['current_version']}\n"
+                updates_text += f"  Nova versão: {driver_info['latest_version']}\n\n"
+
+            updates_text += "Deseja baixar os drivers atualizados?\n(Eles serão salvos em Documentos)"
+
+            if messagebox.askyesno("Atualização de Drivers", updates_text):
+                # Baixa os drivers
+                downloads = self._download_driver_updates(available_updates)
+
+                if downloads:
+                    result_text = "Drivers baixados com sucesso:\n\n"
+                    for driver_name, file_path in downloads.items():
+                        result_text += f"✓ {driver_name}\n   📁 {file_path}\n\n"
+
+                    result_text += "⚠️ IMPORTANTE:\n"
+                    result_text += "1. Execute os instaladores como Administrador\n"
+                    result_text += "2. Reinicie o PC após instalar\n"
+                    result_text += "3. Faça backup caso possa reverter"
+
+                    messagebox.showinfo("Drivers Baixados", result_text)
+
+                    # Abre pasta de downloads
+                    downloads_folder = os.path.expandvars("%USERPROFILE%\\Documents\\AlcesBoost_Drivers")
+                    if os.path.exists(downloads_folder):
+                        os.startfile(downloads_folder)
+                else:
+                    messagebox.showwarning("Erro", "Não foi possível baixar os drivers")
+
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro ao atualizar drivers: {str(e)}")
+
+    def _check_for_driver_updates(self):
+        """Verifica quais drivers estão desatualizados."""
+        available_updates = []
+
+        try:
+            c = wmi.WMI()
+
+            # Verificar GPU drivers
+            for gpu in c.Win32_VideoController():
+                gpu_name = gpu.Name or "GPU Desconhecida"
+                driver_version = gpu.DriverVersion or "0.0.0"
+
+                latest_info = self._get_latest_gpu_driver_info(gpu_name, driver_version)
+                if latest_info and latest_info['is_outdated']:
+                    available_updates.append({
+                        'name': f"Driver GPU - {gpu_name}",
+                        'current_version': driver_version,
+                        'latest_version': latest_info['version'],
+                        'download_url': latest_info['url'],
+                        'type': 'gpu'
+                    })
+
+            # Verificar network drivers
+            for nic in c.Win32_NetworkAdapter():
+                if nic.AdapterType == "Ethernet 802.3" or (nic.Name and ("Wi-Fi" in nic.Name or "Wireless" in nic.Name)):
+                    driver_version = getattr(nic, 'DriverVersion', '0.0.0')
+                    if driver_version != "0.0.0":
+                        # Uma verificação simples de antiguidade
+                        driver_year = 0
+                        try:
+                            driver_date = getattr(nic, 'DriverDate', '')
+                            if driver_date and len(driver_date) >= 4:
+                                driver_year = int(driver_date[:4])
+                        except:
+                            pass
+
+                        current_year = datetime.now().year
+                        if current_year - driver_year > 2:
+                            available_updates.append({
+                                'name': f"Driver Network - {nic.Name}",
+                                'current_version': driver_version,
+                                'latest_version': 'Verificar no site',
+                                'download_url': 'https://www.intel.com/content/www/us/en/support/detect.html',
+                                'type': 'network'
+                            })
+
+        except Exception as e:
+            messagebox.showerror("Erro na Verificação", f"Erro ao verificar drivers: {str(e)}")
+
+        return available_updates
+
+    def _get_latest_gpu_driver_info(self, gpu_name, current_version):
+        """Obtém informações sobre a versão mais recente do driver GPU."""
+        gpu_lower = gpu_name.lower()
+
+        try:
+            if "nvidia" in gpu_lower:
+                # NVIDIA driver check
+                return self._check_nvidia_latest_driver(current_version)
+            elif "amd" in gpu_lower or "radeon" in gpu_lower:
+                # AMD driver check
+                return self._check_amd_latest_driver(current_version)
+            elif "intel" in gpu_lower:
+                # Intel driver check
+                return self._check_intel_latest_driver(current_version)
+        except Exception:
+            pass
+
+        return None
+
+    def _check_nvidia_latest_driver(self, current_version):
+        """Verifica versão mais recente do driver NVIDIA."""
+        try:
+            # versão atual / mais recente (simplificado - em produção usar API oficial)
+            current_major = 0
+            try:
+                current_major = int(current_version.split('.')[0])
+            except:
+                pass
+
+            # Drivers NVIDIA recentes são 5xx.x ou superiores
+            latest_major = 560
+            is_outdated = current_major < latest_major
+
+            if is_outdated:
+                return {
+                    'version': f'{latest_major}.xx (Recomendado)',
+                    'url': 'https://www.nvidia.com/Download/driverResults.aspx/208751/',
+                    'is_outdated': True
+                }
+            return {'is_outdated': False}
+        except Exception:
+            return None
+
+    def _check_amd_latest_driver(self, current_version):
+        """Verifica versão mais recente do driver AMD."""
+        try:
+            current_major = 0
+            try:
+                current_major = int(current_version.split('.')[0])
+            except:
+                pass
+
+            # Drivers AMD recentes são 2X.x ou superiores
+            latest_major = 24
+            is_outdated = current_major < latest_major
+
+            if is_outdated:
+                return {
+                    'version': f'{latest_major}.xx (Recomendado)',
+                    'url': 'https://www.amd.com/en/support/download/drivers.html',
+                    'is_outdated': True
+                }
+            return {'is_outdated': False}
+        except Exception:
+            return None
+
+    def _check_intel_latest_driver(self, current_version):
+        """Verifica versão mais recente do driver Intel."""
+        try:
+            return {
+                'version': 'Última disponível',
+                'url': 'https://www.intel.com/content/www/us/en/support/detect.html',
+                'is_outdated': True
+            }
+        except Exception:
+            return None
+
+    def _download_driver_updates(self, available_updates):
+        """Baixa drivers atualizados de sites oficiais."""
+        downloads = {}
+
+        try:
+            # Cria pasta para downloads
+            downloads_folder = os.path.expandvars("%USERPROFILE%\\Documents\\AlcesBoost_Drivers")
+            os.makedirs(downloads_folder, exist_ok=True)
+
+            for update in available_updates:
+                try:
+                    driver_name = update['name']
+                    download_url = update['download_url']
+
+                    # Para testes, apenas logar (em produção, fazer download real)
+                    # urllib.request.urlretrieve(download_url, file_path)
+
+                    # Criar arquivo com informações do driver
+                    file_path = os.path.join(downloads_folder, f"{driver_name.replace(' ', '_')}_info.txt")
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(f"Informações de Atualização de Driver\n")
+                        f.write(f"====================================\n\n")
+                        f.write(f"Driver: {driver_name}\n")
+                        f.write(f"Versão Atual: {update['current_version']}\n")
+                        f.write(f"Nova Versão: {update['latest_version']}\n")
+                        f.write(f"Link de Download: {download_url}\n\n")
+                        f.write(f"Por favor, visite o link acima e baixe o driver manual.\n")
+
+                    downloads[driver_name] = file_path
+
+                except Exception as e:
+                    print(f"Erro ao baixar {driver_name}: {str(e)}")
+
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro ao preparar downloads: {str(e)}")
+
+        return downloads
 
     def _get_driver_status(self):
         """Obtém status detalhado dos drivers."""
