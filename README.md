@@ -127,5 +127,3 @@ Ou use o script fornecido no repositório:
 - É possível usar um logotipo sem fundo (como a imagem do veado) no canto superior: basta colocar um arquivo `deer.png` ou `logo.png` na mesma pasta do executável. O mesmo arquivo será utilizado para gerar o ícone (`alcesboost.ico`) via `generate_icon.py`.
 - O visual (cores, fontes, etc.) está centralizado em uma classe `Style` (`style.py`). Se desejar alterar o tema, edite essa classe ou carregue configurações externas com `Style.load_from_json(path)`. Mantém-se o acesso a essas propriedades via `self.colors` e `self.fonts` no código principal.
 - Alguns tweaks exigem execução com privilégios de Administrador; execute o `.exe` como Administrador quando necessário.
-
-Se quiser, posso também criar um instalador Windows (Inno Setup) para distribuição.
