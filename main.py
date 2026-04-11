@@ -9,8 +9,68 @@ import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
+import platform
+import wmi
 
 from PIL import Image
+
+
+def get_memory_type_name(mem_type):
+    """Converte número de tipo de memória WMI para string legível.
+
+    Mapeia valores numéricos de Win32_PhysicalMemory.MemoryType para descrições:
+    - 20: DDR
+    - 21: DDR2
+    - 24: DDR3
+    - 26: DDR4
+    - 34: DDR5
+    """
+    memory_types = {
+        20: "DDR",
+        21: "DDR2",
+        24: "DDR3",
+        26: "DDR4",
+        34: "DDR5",
+    }
+    return memory_types.get(mem_type, "Desconhecido")
+
+
+def get_chipset_info(motherboard_name):
+    """Extrai informação de chipset do nome da placa mãe ou via WMI.
+
+    Tenta identificar o chipset a partir do nome do produto da placa mãe.
+    Suporta Intel (Z790, H770, B760) e AMD (X670E, B650).
+    """
+    if not motherboard_name:
+        return "Não detectado"
+
+    # Padrões comuns de chipsets Intel e AMD
+    chipset_patterns = {
+        "Z890": "Intel Z890",
+        "Z790": "Intel Z790",
+        "H870": "Intel H870",
+        "H770": "Intel H770",
+        "B860": "Intel B860",
+        "B760": "Intel B760",
+        "Z690": "Intel Z690",
+        "H670": "Intel H670",
+        "B660": "Intel B660",
+        "X870": "AMD X870",
+        "X870-E": "AMD X870E",
+        "X870E": "AMD X870E",
+        "X670": "AMD X670",
+        "X670E": "AMD X670E",
+        "B850": "AMD B850",
+        "B650": "AMD B650",
+        "B650E": "AMD B650E",
+    }
+
+    mobo_upper = motherboard_name.upper()
+    for pattern, chipset in chipset_patterns.items():
+        if pattern in mobo_upper:
+            return chipset
+
+    return "Detectado (Desconhecido)"
 
 
 class AlcesBoostApp(ctk.CTk):
@@ -23,20 +83,20 @@ class AlcesBoostApp(ctk.CTk):
 
         self.style = Style()
 
+        # Calcula fator de escala baseado na resolução da tela
+        screen_height = self.winfo_screenheight()
+        self.style.calculate_scale_factor(screen_height)
 
         self.title("alcesboost")
+        # Reduz tamanho mínimo para permitir resoluções mais baixas
+        self.minsize(800, 600)
         self.geometry("1000x720")
-        self.minsize(900, 600)
         self.configure(fg_color=self.style.colors["bg"])
         self.base_dir = Path(__file__).resolve().parent
         self.header_logo = None
-        self._last_net_counters = None
-        self._last_net_ts = None
         self._set_app_icon()
 
         self.check_admin()
-        self.tweaks_vars = {}
-        self.cleanup_vars = {}
         self.create_widgets()
 
     @property
@@ -97,11 +157,9 @@ class AlcesBoostApp(ctk.CTk):
             corner_radius=10,
         )
         tabview.pack(fill="both", expand=True)
-        tabview.add("Sistema & Tweaks")
-        tabview.add("Limpeza")
+        tabview.add("Hardware & CS2 Otimização")
 
-        self.setup_system_tab(tabview.tab("Sistema & Tweaks"))
-        self.setup_cleanup_tab(tabview.tab("Limpeza"))
+        self.setup_hardware_tab(tabview.tab("Hardware & CS2 Otimização"))
 
     def _build_header(self, parent):
         header = ctk.CTkFrame(
@@ -110,7 +168,7 @@ class AlcesBoostApp(ctk.CTk):
             border_width=1,
             border_color=self.colors["gold_dark"],
             corner_radius=10,
-            height=68,
+            height=int(68 * self.style.scale_factor),
         )
         header.pack(fill="x", pady=(0, 10))
         header.pack_propagate(False)
@@ -119,27 +177,31 @@ class AlcesBoostApp(ctk.CTk):
         if logo_path.exists():
             try:
                 logo = Image.open(logo_path)
-                self.header_logo = ctk.CTkImage(light_image=logo, dark_image=logo, size=(48, 48))
+                # Logo com tamanho escalável (entre 40-64px)
+                logo_size = max(40, min(64, int(48 * self.style.scale_factor)))
+                self.header_logo = ctk.CTkImage(light_image=logo, dark_image=logo, size=(logo_size, logo_size))
                 logo_label = ctk.CTkLabel(header, text="", image=self.header_logo)
-                logo_label.pack(side="left", padx=(16, 6), pady=8)
+                logo_label.pack(side="left", padx=(16, 6), pady=int(8 * self.style.scale_factor))
             except Exception:
                 self.header_logo = None
 
+        title_font_size = self.style.get_scaled_font(38)
         title = ctk.CTkLabel(
             header,
             text="alcesboost",
             text_color=self.colors["gold_bright"],
-            font=ctk.CTkFont(family="Segoe UI", size=38, weight="bold"),
+            font=ctk.CTkFont(family="Segoe UI", size=title_font_size, weight="bold"),
         )
-        title.pack(side="left", padx=10, pady=8)
+        title.pack(side="left", padx=10, pady=int(8 * self.style.scale_factor))
 
+        subtitle_font_size = self.style.get_scaled_font(16)
         subtitle = ctk.CTkLabel(
             header,
             text="Performance Toolkit",
             text_color=self.style.colors["text_soft"],
-            font=ctk.CTkFont(family="Segoe UI", size=16),
+            font=ctk.CTkFont(family="Segoe UI", size=subtitle_font_size),
         )
-        subtitle.pack(side="left", pady=12)
+        subtitle.pack(side="left", pady=int(12 * self.style.scale_factor))
 
     def _styled_panel(self, parent):
         return ctk.CTkFrame(
@@ -151,6 +213,7 @@ class AlcesBoostApp(ctk.CTk):
         )
 
     def _styled_button(self, parent, text, command):
+        button_font_size = self.style.get_scaled_font(16)
         return ctk.CTkButton(
             parent,
             text=text,
@@ -161,8 +224,8 @@ class AlcesBoostApp(ctk.CTk):
             corner_radius=8,
             border_width=1,
             border_color=self.style.colors["gold_bright"],
-            font=ctk.CTkFont(family="Segoe UI", size=16, weight="bold"),
-            height=40,
+            font=ctk.CTkFont(family="Segoe UI", size=button_font_size, weight="bold"),
+            height=int(40 * self.style.scale_factor),
         )
 
     def _make_scroll_area(self, parent):
@@ -199,12 +262,15 @@ class AlcesBoostApp(ctk.CTk):
             )
             row.pack(fill="x", padx=8, pady=6)
 
+            checkbox_font_size = self.style.get_scaled_font(14)  # Reduzido de 22px
+            checkbox_size = int(20 * self.style.scale_factor)
+
             cb = ctk.CTkCheckBox(
                 row,
                 text=name,
                 variable=var,
-                checkbox_width=20,
-                checkbox_height=20,
+                checkbox_width=checkbox_size,
+                checkbox_height=checkbox_size,
                 corner_radius=6,
                 border_width=2,
                 border_color=self.colors["gold"],
@@ -212,107 +278,1049 @@ class AlcesBoostApp(ctk.CTk):
                 hover_color=self.colors["gold_bright"],
                 checkmark_color="#2B183F",
                 text_color=self.colors["gold_bright"],
-                font=ctk.CTkFont(family="Segoe UI", size=22),
+                font=ctk.CTkFont(family="Segoe UI", size=checkbox_font_size),
             )
             cb.pack(side="left", padx=8, pady=8, anchor="w")
 
+            desc_font_size = self.style.get_scaled_font(13)  # Reduzido de 18px
             desc = ctk.CTkLabel(
                 row,
                 text=info["desc"],
                 text_color=self.colors["text"],
-                font=ctk.CTkFont(family="Segoe UI", size=18),
+                font=ctk.CTkFont(family="Segoe UI", size=desc_font_size),
                 justify="left",
+                wraplength=400,  # Permite wrapping de texto longo
             )
             desc.pack(side="left", padx=(4, 8), pady=8, anchor="w")
 
-    def setup_system_tab(self, frame):
-        info_panel = self._styled_panel(frame)
-        info_panel.pack(fill="x", padx=12, pady=(12, 8))
+    def setup_hardware_tab(self, frame):
+        """Aba para detecção de hardware e otimização CS2 baseada no hardware."""
+        # Painel de detecção de hardware
+        hardware_panel = self._styled_panel(frame)
+        hardware_panel.pack(fill="x", padx=12, pady=(12, 8))
 
-        self.sys_text = ctk.CTkTextbox(
-            info_panel,
+        textbox_font_size = self.style.get_scaled_font(14)
+        self.hardware_text = ctk.CTkTextbox(
+            hardware_panel,
             wrap="word",
-            height=42,
+            height=int(120 * self.style.scale_factor),
             fg_color=self.colors["bg_alt"],
             border_width=1,
             border_color=self.colors["gold_dark"],
             text_color=self.colors["gold_bright"],
-            font=ctk.CTkFont(family="Consolas", size=16),
+            font=ctk.CTkFont(family="Consolas", size=textbox_font_size),
         )
-        self.sys_text.pack(fill="x", padx=10, pady=(10, 8))
-        self.sys_text.configure(state="disabled")
+        self.hardware_text.pack(fill="x", padx=10, pady=(10, 8))
+        self.hardware_text.configure(state="disabled")
 
-        self._styled_button(info_panel, "Atualizar Métricas", self.refresh_system_metrics).pack(
-            padx=10, pady=(0, 10), anchor="w"
-        )
-        # allow the user to explicitly check for various buffers
-        self._styled_button(info_panel, "Verificar Buffers", self.check_buffers).pack(
+        self._styled_button(hardware_panel, "Detectar Hardware", self.detect_hardware).pack(
             padx=10, pady=(0, 10), anchor="w"
         )
 
-        self.tweaks_config = {
-            "🎮 MODO ZERO INPUT LAG": {
-                "desc": "Aplica TODOS os tweaks para eliminar input lag e microstutter (Prioridade, Energia, MMCSS, Dynamic Tick, SysMain, Game Mode/DVR)",
-                "func": self.tweak_zero_input_lag,
+        # Painel de drivers
+        drivers_panel = self._styled_panel(frame)
+        drivers_panel.pack(fill="x", padx=12, pady=(0, 8))
+
+        drivers_title_font_size = self.style.get_scaled_font(18)
+        drivers_title = ctk.CTkLabel(
+            drivers_panel,
+            text="Gerenciamento de Drivers",
+            text_color=self.colors["gold_bright"],
+            font=ctk.CTkFont(family="Segoe UI", size=drivers_title_font_size, weight="bold"),
+        )
+        drivers_title.pack(pady=(10, 5))
+
+        drivers_text_font_size = self.style.get_scaled_font(12)
+        self.drivers_text = ctk.CTkTextbox(
+            drivers_panel,
+            wrap="word",
+            height=int(100 * self.style.scale_factor),
+            fg_color=self.colors["bg_alt"],
+            border_width=1,
+            border_color=self.colors["gold_dark"],
+            text_color=self.colors["text"],
+            font=ctk.CTkFont(family="Segoe UI", size=drivers_text_font_size),
+        )
+        self.drivers_text.pack(fill="x", padx=10, pady=(5, 10))
+        self.drivers_text.configure(state="disabled")
+
+        drivers_buttons_frame = ctk.CTkFrame(drivers_panel, fg_color="transparent")
+        drivers_buttons_frame.pack(fill="x", padx=10, pady=(0, 10))
+
+        self._styled_button(drivers_buttons_frame, "Verificar Drivers", self.check_drivers_status).pack(
+            side="left", padx=(0, 10)
+        )
+        self._styled_button(drivers_buttons_frame, "Atualizar Drivers", self.update_drivers).pack(
+            side="left"
+        )
+
+        # Painel de otimização CS2
+        cs2_panel = self._styled_panel(frame)
+        cs2_panel.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+
+        cs2_title_font_size = self.style.get_scaled_font(20)
+        cs2_title = ctk.CTkLabel(
+            cs2_panel,
+            text="Otimização CS2 Baseada no Hardware",
+            text_color=self.colors["gold_bright"],
+            font=ctk.CTkFont(family="Segoe UI", size=cs2_title_font_size, weight="bold"),
+        )
+        cs2_title.pack(pady=(10, 5))
+
+        cs2_recommendations_font_size = self.style.get_scaled_font(14)
+        self.cs2_recommendations = ctk.CTkTextbox(
+            cs2_panel,
+            wrap="word",
+            height=int(80 * self.style.scale_factor),
+            fg_color=self.colors["bg_alt"],
+            border_width=1,
+            border_color=self.colors["gold_dark"],
+            text_color=self.colors["text"],
+            font=ctk.CTkFont(family="Segoe UI", size=cs2_recommendations_font_size),
+        )
+        self.cs2_recommendations.pack(fill="x", padx=10, pady=(5, 10))
+        self.cs2_recommendations.configure(state="disabled")
+
+        self.cs2_tweaks_config = {
+            "Otimização de CPU": {
+                "desc": "Ajusta configurações de CPU para melhor frametime",
+                "func": self.optimize_cpu_for_cs2,
             },
-            "Prioridade Alta": {
-                "desc": "Define o processo CS2 como alta prioridade no sistema operacional",
-                "func": self.tweak_high_priority,
+            "Otimização de GPU": {
+                "desc": "Configura GPU para máxima performance em jogos",
+                "func": self.optimize_gpu_for_cs2,
             },
-            "Plano de Energia": {
-                "desc": "Alterna para o plano de energia 'Alto Desempenho' do Windows",
-                "func": self.tweak_power_plan,
+            "Otimização de RAM": {
+                "desc": "Ajusta gerenciamento de memória para jogos",
+                "func": self.optimize_ram_for_cs2,
             },
-            "Desabilitar Offload": {
-                "desc": "Desabilita offloading de rede (LSO, RSC) para menor latência",
-                "func": self.tweak_disable_offload,
+            "Configurações de Rede": {
+                "desc": "Otimiza rede para baixa latência em jogos online",
+                "func": self.optimize_network_for_cs2,
             },
-            "TCP NoDelay": {
-                "desc": "Desabilita algoritmo Nagle para reduzir latência na rede",
-                "func": self.tweak_tcp_nodelay,
-            },
-            "MMCSS Latência (Gaming)": {
-                "desc": "Ajusta perfil multimídia do Windows para reduzir latência em jogos",
-                "func": self.tweak_mmcss_latency,
-            },
-            "Scheduler Prioritário": {
-                "desc": "Aumenta prioridade de apps em foreground para menor input lag",
-                "func": self.tweak_scheduler_priority,
-            },
-            "Timer Dinâmico Off": {
-                "desc": "Desabilita dynamic tick para estabilizar frametime (requer reiniciar)",
-                "func": self.tweak_disable_dynamic_tick,
-            },
-            "Desabilitar Superfetch": {
-                "desc": "Desabilita SysMain para reduzir uso de disco e melhorar frametime",
-                "func": self.tweak_disable_superfetch,
-            },
-            "Desabilitar Aero Theme": {
-                "desc": "Desabilita transparência do Windows para melhor performance",
-                "func": self.tweak_disable_aero,
-            },
-            "Desabilitar Hibernação": {
-                "desc": "Desabilita hibernação para liberar espaço em disco",
-                "func": self.tweak_disable_hibernation,
-            },
-            "Full Screen Optimization": {
-                "desc": "Desabilita otimizações de tela cheia que causam stutter",
-                "func": self.tweak_full_screen_opt,
-            },
-            "Game Mode + DVR Off": {
-                "desc": "Força Game Mode e desabilita capturas/Game DVR para reduzir stutter",
-                "func": self.tweak_game_mode_and_dvr,
+            "Tweaks de Sistema": {
+                "desc": "Aplica tweaks gerais do sistema para jogos",
+                "func": self.apply_system_tweaks_for_cs2,
             },
         }
 
-        tweaks_area = self._make_scroll_area(frame)
-        self._build_option_rows(tweaks_area, self.tweaks_config, self.tweaks_vars)
+        cs2_area = self._make_scroll_area(cs2_panel)
+        self.cs2_tweaks_vars = {}
+        self._build_option_rows(cs2_area, self.cs2_tweaks_config, self.cs2_tweaks_vars)
 
-        self._styled_button(frame, "Aplicar Tweaks Selecionados", self.apply_selected_tweaks).pack(
+        self._styled_button(cs2_panel, "Aplicar Otimizações CS2", self.apply_cs2_optimizations).pack(
             padx=12, pady=(0, 12)
         )
 
-        self.refresh_system_metrics()
+    def detect_hardware(self):
+        """Detecta e exibe informações do hardware."""
+        try:
+            hardware_info = self._get_hardware_info()
+            self.hardware_text.configure(state="normal")
+            self.hardware_text.delete("1.0", "end")
+            self.hardware_text.insert("1.0", hardware_info)
+            self.hardware_text.configure(state="disabled")
+
+            # Gera recomendações baseadas no hardware
+            recommendations = self._generate_cs2_recommendations()
+            self.cs2_recommendations.configure(state="normal")
+            self.cs2_recommendations.delete("1.0", "end")
+            self.cs2_recommendations.insert("1.0", recommendations)
+            self.cs2_recommendations.configure(state="disabled")
+
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro ao detectar hardware: {str(e)}")
+
+    def check_drivers_status(self):
+        """Verifica status atual dos drivers."""
+        try:
+            driver_status = self._get_driver_status()
+            self.drivers_text.configure(state="normal")
+            self.drivers_text.delete("1.0", "end")
+            self.drivers_text.insert("1.0", driver_status)
+            self.drivers_text.configure(state="disabled")
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro ao verificar drivers: {str(e)}")
+
+    def update_drivers(self):
+        """Abre links para atualização de drivers."""
+        try:
+            driver_links = self._get_driver_update_links()
+            if driver_links:
+                # Mostra opções para o usuário
+                self._show_driver_update_options(driver_links)
+            else:
+                messagebox.showinfo("Drivers", "Nenhum driver identificado para atualização automática.\n\nVerifique manualmente os sites oficiais dos fabricantes.")
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro ao preparar atualização: {str(e)}")
+
+    def _get_driver_status(self):
+        """Obtém status detalhado dos drivers."""
+        status_lines = ["=== STATUS DOS DRIVERS ===\n"]
+
+        try:
+            c = wmi.WMI()
+
+            # GPU Drivers
+            gpu_status = []
+            for gpu in c.Win32_VideoController():
+                driver_version = gpu.DriverVersion or "Não detectado"
+                driver_date = gpu.DriverDate or "Não detectado"
+
+                if driver_date != "Não detectado":
+                    try:
+                        year = driver_date[:4]
+                        month = driver_date[4:6]
+                        day = driver_date[6:8]
+                        driver_date = f"{day}/{month}/{year}"
+                    except:
+                        pass
+
+                gpu_name = gpu.Name or "GPU Desconhecida"
+                status = self._analyze_gpu_driver_status(gpu_name, driver_version, driver_date)
+                gpu_status.append(f"🎮 {gpu_name}\n   Versão: {driver_version}\n   Data: {driver_date}\n   Status: {status}\n")
+
+            if gpu_status:
+                status_lines.append("GPU Drivers:")
+                status_lines.extend(gpu_status)
+
+            # Rede Drivers
+            network_status = []
+            for nic in c.Win32_NetworkAdapter():
+                if nic.AdapterType == "Ethernet 802.3" or (nic.Name and ("Wi-Fi" in nic.Name or "Wireless" in nic.Name)):
+                    driver_version = getattr(nic, 'DriverVersion', 'Não detectado')
+                    driver_date = getattr(nic, 'DriverDate', 'Não detectado')
+
+                    if driver_date and driver_date != "Não detectado":
+                        try:
+                            year = driver_date[:4]
+                            month = driver_date[4:6]
+                            day = driver_date[6:8]
+                            driver_date = f"{day}/{month}/{year}"
+                        except:
+                            pass
+
+                    network_status.append(f"🌐 {nic.Name}\n   Versão: {driver_version}\n   Data: {driver_date}\n")
+
+            if network_status:
+                status_lines.append("Rede Drivers:")
+                status_lines.extend(network_status)
+
+            # Recomendações gerais
+            status_lines.append("\n💡 Recomendações:")
+            status_lines.append("   • Mantenha drivers de GPU sempre atualizados")
+            status_lines.append("   • Drivers com mais de 6 meses podem estar desatualizados")
+            status_lines.append("   • Use o botão 'Atualizar Drivers' para links oficiais")
+
+        except Exception as e:
+            status_lines.append(f"Erro ao verificar drivers: {str(e)}")
+
+        return "\n".join(status_lines)
+
+    def _analyze_gpu_driver_status(self, gpu_name, version, date):
+        """Analisa se o driver GPU está atualizado."""
+        try:
+            # Análise básica por fabricante
+            gpu_lower = gpu_name.lower()
+
+            if "nvidia" in gpu_lower:
+                return self._check_nvidia_driver(version, date)
+            elif "amd" in gpu_lower or "radeon" in gpu_lower:
+                return self._check_amd_driver(version, date)
+            elif "intel" in gpu_lower:
+                return self._check_intel_driver(version, date)
+            else:
+                return "❓ Driver genérico - verifique manualmente"
+
+        except Exception:
+            return "❓ Status desconhecido"
+
+    def _check_nvidia_driver(self, version, date):
+        """Verifica status do driver NVIDIA."""
+        try:
+            if not version or version == "Não detectado":
+                return "❌ Driver não detectado"
+
+            # Drivers NVIDIA recentes são 5xx.x ou superiores
+            version_parts = version.split('.')
+            if len(version_parts) >= 1:
+                major_version = int(version_parts[0])
+                if major_version >= 500:
+                    return "✅ Driver atualizado"
+                elif major_version >= 400:
+                    return "⚠️ Driver razoável - considere atualizar"
+                else:
+                    return "❌ Driver muito antigo - atualização urgente"
+
+            return "❓ Versão não identificada"
+
+        except Exception:
+            return "❓ Erro na análise"
+
+    def _check_amd_driver(self, version, date):
+        """Verifica status do driver AMD."""
+        try:
+            if not version or version == "Não detectado":
+                return "❌ Driver não detectado"
+
+            # Drivers AMD recentes são 2X.x ou superiores
+            version_parts = version.split('.')
+            if len(version_parts) >= 1:
+                major_version = int(version_parts[0])
+                if major_version >= 20:
+                    return "✅ Driver atualizado"
+                elif major_version >= 15:
+                    return "⚠️ Driver razoável - considere atualizar"
+                else:
+                    return "❌ Driver muito antigo - atualização urgente"
+
+            return "❓ Versão não identificada"
+
+        except Exception:
+            return "❓ Erro na análise"
+
+    def _check_intel_driver(self, version, date):
+        """Verifica status do driver Intel."""
+        try:
+            if not version or version == "Não detectado":
+                return "❌ Driver não detectado"
+
+            # Drivers Intel são mais difíceis de analisar por versão
+            # Recomendamos verificação manual
+            return "ℹ️ Verifique no site da Intel"
+
+        except Exception:
+            return "❓ Erro na análise"
+
+    def _get_driver_update_links(self):
+        """Gera links para atualização de drivers baseada no hardware detectado."""
+        links = {}
+
+        try:
+            c = wmi.WMI()
+
+            # Verificar GPUs para links específicos
+            for gpu in c.Win32_VideoController():
+                gpu_name = gpu.Name or ""
+                gpu_lower = gpu_name.lower()
+
+                if "nvidia" in gpu_lower:
+                    links["NVIDIA GPU"] = "https://www.nvidia.com/Download/index.aspx"
+                elif "amd" in gpu_lower or "radeon" in gpu_lower:
+                    links["AMD GPU"] = "https://www.amd.com/en/support"
+                elif "intel" in gpu_lower:
+                    links["Intel GPU"] = "https://www.intel.com/content/www/us/en/download-center/home.html"
+
+            # Links gerais
+            links["Ferramentas de Driver"] = "https://www.iobit.com/en/driver-booster.php"
+            links["Windows Update"] = "ms-settings:windowsupdate"
+
+        except Exception:
+            pass
+
+        return links
+
+    def _show_driver_update_options(self, links):
+        """Mostra opções de atualização de drivers para o usuário."""
+        options_text = "Escolha como atualizar os drivers:\n\n"
+
+        for i, (name, url) in enumerate(links.items(), 1):
+            options_text += f"{i}. {name}\n"
+
+        options_text += "\nSelecione uma opção:"
+
+        # Criar uma janela de diálogo personalizada
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Atualizar Drivers")
+
+        # Dialog com tamanho responsivo
+        main_width = self.winfo_width()
+        main_height = self.winfo_height()
+        dialog_width = max(400, min(int(main_width * 0.6), 600))
+        dialog_height = max(300, min(int(main_height * 0.8), 500))
+        dialog.geometry(f"{dialog_width}x{dialog_height}")
+        dialog.resizable(True, True)  # Tornar redimensionável
+
+        # Centralizar a janela
+        dialog.transient(self)
+        dialog.grab_set()
+
+        # Texto explicativo
+        label_font_size = self.style.get_scaled_font(14)
+        label = ctk.CTkLabel(
+            dialog,
+            text="Selecione uma opção para atualizar drivers:",
+            font=ctk.CTkFont(size=label_font_size, weight="bold")
+        )
+        label.pack(pady=20)
+
+        # Frame para botões (scrollable se muitos)
+        buttons_frame = ctk.CTkScrollableFrame(dialog, fg_color="transparent", height=300)
+        buttons_frame.pack(fill="both", expand=True, pady=10, padx=10)
+
+        # Criar botões para cada opção
+        button_font_size = self.style.get_scaled_font(12)
+        for name, url in links.items():
+            btn = ctk.CTkButton(
+                buttons_frame,
+                text=name,
+                command=lambda u=url: self._open_driver_link(u, dialog),
+                fg_color=self.colors["gold"],
+                hover_color=self.colors["gold_bright"],
+                font=ctk.CTkFont(family="Segoe UI", size=button_font_size),
+                width=max(150, int(dialog_width * 0.7))  # Responsivo
+            )
+            btn.pack(pady=5, fill="x", padx=10)
+
+        # Botão cancelar
+        cancel_btn = ctk.CTkButton(
+            dialog,
+            text="Cancelar",
+            command=dialog.destroy,
+            fg_color="transparent",
+            border_width=1,
+            border_color=self.colors["gold_dark"],
+            font=ctk.CTkFont(family="Segoe UI", size=button_font_size),
+        )
+        cancel_btn.pack(pady=20)
+
+    def _open_driver_link(self, url, dialog):
+        """Abre o link do driver e fecha o diálogo."""
+        try:
+            if url.startswith("ms-settings:"):
+                # Comando do Windows
+                os.system(f"start {url}")
+            else:
+                # URL web
+                os.system(f"start {url}")
+
+            messagebox.showinfo("Sucesso", "Link aberto! Siga as instruções do fabricante para atualizar o driver.")
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro ao abrir link: {str(e)}")
+
+        dialog.destroy()
+
+    def _get_hardware_info(self):
+        """Coleta informações detalhadas do hardware."""
+        info_lines = []
+
+        try:
+            # CPU
+            cpu_name = platform.processor()
+            if not cpu_name:
+                cpu_name = "Não detectado"
+            cpu_count = psutil.cpu_count(logical=True)
+            cpu_physical = psutil.cpu_count(logical=False)
+            cpu_freq = psutil.cpu_freq()
+            if cpu_freq:
+                cpu_freq_str = f"{cpu_freq.current:.0f} MHz (max: {cpu_freq.max:.0f} MHz)"
+            else:
+                cpu_freq_str = "Não detectado"
+
+            info_lines.append(f"CPU: {cpu_name}")
+            info_lines.append(f"Cores: {cpu_physical} físicos / {cpu_count} lógicos")
+            info_lines.append(f"Frequência: {cpu_freq_str}")
+
+        except Exception:
+            info_lines.append("CPU: Erro na detecção")
+
+        try:
+            # RAM
+            mem = psutil.virtual_memory()
+            mem_total_gb = mem.total // (1024**3)
+            mem_type = "Não detectado"
+            mem_speed = "Não detectado"
+
+            # Tenta detectar tipo de RAM via WMI
+            try:
+                c = wmi.WMI()
+                for memory in c.Win32_PhysicalMemory():
+                    mem_type_num = memory.MemoryType
+                    mem_type = get_memory_type_name(mem_type_num) if mem_type_num else "Desconhecido"
+                    mem_speed = f"{memory.Speed} MHz" if memory.Speed else "Desconhecido"
+                    break
+            except Exception:
+                pass
+
+            info_lines.append(f"RAM: {mem_total_gb} GB ({mem_type}, {mem_speed})")
+
+        except Exception:
+            info_lines.append("RAM: Erro na detecção")
+
+        try:
+            # GPU
+            gpu_info = []
+            try:
+                c = wmi.WMI()
+                for gpu in c.Win32_VideoController():
+                    gpu_name = gpu.Name or "Não detectado"
+                    gpu_memory = gpu.AdapterRAM
+                    if gpu_memory and gpu_memory > 0:
+                        gpu_memory_gb = gpu_memory // (1024**3)
+                        gpu_info.append(f"{gpu_name} ({gpu_memory_gb} GB)")
+                    else:
+                        # Tenta converter memória em MiB se GB falhar
+                        try:
+                            gpu_memory_mib = gpu_memory // (1024**2) if gpu_memory else 0
+                            if gpu_memory_mib > 0:
+                                gpu_info.append(f"{gpu_name} ({gpu_memory_mib} MiB)")
+                            else:
+                                gpu_info.append(gpu_name)
+                        except:
+                            gpu_info.append(gpu_name)
+            except Exception:
+                # Fallback para nvidia-smi
+                try:
+                    proc = subprocess.run(
+                        ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    if proc.returncode == 0:
+                        for line in proc.stdout.strip().split('\n'):
+                            if line:
+                                parts = line.split(',')
+                                if len(parts) >= 2:
+                                    gpu_name = parts[0].strip()
+                                    gpu_mem = parts[1].strip()
+                                    try:
+                                        gpu_mem_gb = int(gpu_mem) // 1024
+                                        gpu_info.append(f"{gpu_name} ({gpu_mem_gb} GB)")
+                                    except:
+                                        gpu_info.append(f"{gpu_name} ({gpu_mem} MiB)")
+                except Exception:
+                    pass
+
+                # Fallback para amd-smi (AMD GPUs)
+                if not gpu_info:
+                    try:
+                        proc = subprocess.run(
+                            ["amd-smi", "list"],
+                            capture_output=True,
+                            text=True,
+                            timeout=5,
+                        )
+                        if proc.returncode == 0:
+                            for line in proc.stdout.strip().split('\n'):
+                                if 'GPU' in line or 'Radeon' in line:
+                                    gpu_info.append(f"AMD {line.strip()}")
+                    except Exception:
+                        pass
+
+            if not gpu_info:
+                gpu_info.append("Não detectado")
+
+            info_lines.append(f"GPU: {', '.join(gpu_info)}")
+
+        except Exception:
+            info_lines.append("GPU: Erro na detecção")
+
+        try:
+            # Placa mãe e chipset
+            try:
+                c = wmi.WMI()
+                motherboard = c.Win32_BaseBoard()[0]
+                mobo_name = motherboard.Product or "Não detectado"
+                mobo_manufacturer = motherboard.Manufacturer or "Não detectado"
+
+                # Usa nova função para detectar chipset a partir do nome da placa mãe
+                chipset = get_chipset_info(mobo_name)
+
+                info_lines.append(f"Placa Mãe: {mobo_manufacturer} {mobo_name}")
+                info_lines.append(f"Chipset: {chipset}")
+
+            except Exception:
+                info_lines.append("Placa Mãe: Não detectada")
+                info_lines.append("Chipset: Não detectado")
+
+        except Exception:
+            info_lines.append("Placa Mãe/Chipset: Erro na detecção")
+
+        try:
+            # Tipo de storage (SSD vs HDD)
+            storage_info = "Desconhecido"
+            try:
+                c = wmi.WMI()
+                for disk in c.Win32_DiskDrive():
+                    # MediaType: 3=HDD, 4=SSD, 5=Removable media
+                    media_type = getattr(disk, 'MediaType', None)
+                    if media_type == 4:
+                        storage_info = "SSD"
+                        break
+                    elif media_type == 3:
+                        storage_info = "HDD (Rotativo)"
+                        break
+                    elif media_type is None:
+                        # Fallback: verifica por Model name
+                        model = getattr(disk, 'Model', '')
+                        if 'SSD' in model.upper() or 'NVME' in model.upper():
+                            storage_info = "SSD"
+                            break
+            except Exception:
+                pass
+
+            info_lines.append(f"Storage C: {storage_info}")
+
+        except Exception:
+            pass
+
+        try:
+            # Verificação de drivers
+            driver_info = self._check_drivers()
+            if driver_info:
+                info_lines.append("")
+                info_lines.append("=== VERIFICAÇÃO DE DRIVERS ===")
+                info_lines.extend(driver_info)
+
+        except Exception:
+            info_lines.append("Drivers: Erro na verificação")
+
+        return "\n".join(info_lines)
+
+    def _check_drivers(self):
+        """Verifica versões de drivers importantes."""
+        driver_lines = []
+
+        try:
+            c = wmi.WMI()
+
+            # Driver de GPU
+            gpu_drivers = []
+            for gpu in c.Win32_VideoController():
+                driver_version = gpu.DriverVersion or "Não detectado"
+                driver_date = gpu.DriverDate or "Não detectado"
+                if driver_date != "Não detectado":
+                    # Formatar data do driver
+                    try:
+                        # WMI retorna data no formato YYYYMMDD
+                        year = driver_date[:4]
+                        month = driver_date[4:6]
+                        day = driver_date[6:8]
+                        driver_date = f"{day}/{month}/{year}"
+                    except:
+                        pass
+
+                gpu_name = gpu.Name or "GPU"
+                gpu_drivers.append(f"{gpu_name}: v{driver_version} ({driver_date})")
+
+            if gpu_drivers:
+                driver_lines.append("GPU Drivers:")
+                for driver in gpu_drivers:
+                    driver_lines.append(f"  • {driver}")
+
+            # Driver de Rede
+            network_drivers = []
+            for nic in c.Win32_NetworkAdapter():
+                if nic.AdapterType == "Ethernet 802.3" or nic.Name and ("Wi-Fi" in nic.Name or "Wireless" in nic.Name):
+                    driver_version = getattr(nic, 'DriverVersion', 'Não detectado')
+                    driver_date = getattr(nic, 'DriverDate', 'Não detectado')
+                    if driver_date and driver_date != "Não detectado":
+                        try:
+                            year = driver_date[:4]
+                            month = driver_date[4:6]
+                            day = driver_date[6:8]
+                            driver_date = f"{day}/{month}/{year}"
+                        except:
+                            pass
+
+                    network_drivers.append(f"{nic.Name}: v{driver_version} ({driver_date})")
+
+            if network_drivers:
+                driver_lines.append("Rede Drivers:")
+                for driver in network_drivers[:2]:  # Limitar a 2 para não poluir
+                    driver_lines.append(f"  • {driver}")
+
+            # Driver de Áudio
+            audio_drivers = []
+            for audio in c.Win32_SoundDevice():
+                driver_version = getattr(audio, 'DriverVersion', 'Não detectado')
+                driver_date = getattr(audio, 'DriverDate', 'Não detectado')
+                if driver_date and driver_date != "Não detectado":
+                    try:
+                        year = driver_date[:4]
+                        month = driver_date[4:6]
+                        day = driver_date[6:8]
+                        driver_date = f"{day}/{month}/{year}"
+                    except:
+                        pass
+
+                audio_drivers.append(f"{audio.Name}: v{driver_version} ({driver_date})")
+
+            if audio_drivers:
+                driver_lines.append("Áudio Drivers:")
+                for driver in audio_drivers[:2]:  # Limitar a 2
+                    driver_lines.append(f"  • {driver}")
+
+            # Verificações específicas para drivers conhecidos
+            recommendations = self._analyze_driver_versions()
+            if recommendations:
+                driver_lines.append("")
+                driver_lines.append("Recomendações:")
+                driver_lines.extend(recommendations)
+
+        except Exception as e:
+            driver_lines.append(f"Erro na verificação de drivers: {str(e)}")
+
+        return driver_lines
+
+    def _analyze_driver_versions(self):
+        """Analisa versões de drivers e dá recomendações."""
+        recommendations = []
+
+        try:
+            c = wmi.WMI()
+
+            # Verificar drivers NVIDIA
+            nvidia_found = False
+            for gpu in c.Win32_VideoController():
+                if gpu.Name and "nvidia" in gpu.Name.lower():
+                    nvidia_found = True
+                    driver_version = gpu.DriverVersion or ""
+                    if driver_version:
+                        # Versão do driver NVIDIA (formato: XX.XX.XX.XXX)
+                        try:
+                            version_parts = driver_version.split('.')
+                            if len(version_parts) >= 3:
+                                major = int(version_parts[0])
+                                minor = int(version_parts[1])
+                                # Drivers NVIDIA recentes são 5xx ou superiores
+                                if major < 500:
+                                    recommendations.append("  ⚠️ Driver NVIDIA antigo - considere atualizar")
+                                else:
+                                    recommendations.append("  ✅ Driver NVIDIA atualizado")
+                        except:
+                            recommendations.append("  ❓ Driver NVIDIA - versão não identificada")
+                    break
+
+            # Verificar drivers AMD
+            amd_found = False
+            for gpu in c.Win32_VideoController():
+                if gpu.Name and ("amd" in gpu.Name.lower() or "radeon" in gpu.Name.lower()):
+                    amd_found = True
+                    driver_version = gpu.DriverVersion or ""
+                    if driver_version:
+                        try:
+                            # Drivers AMD recentes são 2X.XX.XX.XXX ou superiores
+                            version_parts = driver_version.split('.')
+                            if len(version_parts) >= 1:
+                                major = int(version_parts[0])
+                                if major < 20:
+                                    recommendations.append("  ⚠️ Driver AMD antigo - considere atualizar")
+                                else:
+                                    recommendations.append("  ✅ Driver AMD atualizado")
+                        except:
+                            recommendations.append("  ❓ Driver AMD - versão não identificada")
+                    break
+
+            # Verificar drivers Intel
+            intel_found = False
+            for gpu in c.Win32_VideoController():
+                if gpu.Name and "intel" in gpu.Name.lower():
+                    intel_found = True
+                    recommendations.append("  ℹ️ Driver Intel - verifique atualizações no site da Intel")
+                    break
+
+            # Recomendação geral se nenhum driver específico foi identificado
+            if not nvidia_found and not amd_found and not intel_found:
+                recommendations.append("  ❓ Verifique drivers de vídeo manualmente")
+
+            # Recomendação geral para todos
+            recommendations.append("  💡 Use ferramentas como Driver Booster ou visite sites oficiais")
+            recommendations.append("  🎮 Para jogos, mantenha drivers de GPU sempre atualizados")
+
+        except Exception:
+            recommendations.append("  ❓ Erro ao analisar drivers")
+
+        return recommendations
+
+    def _generate_cs2_recommendations(self):
+        """Gera recomendações de otimização baseadas no hardware detectado."""
+        recommendations = []
+
+        try:
+            # Análise básica do hardware
+            mem = psutil.virtual_memory()
+            mem_total_gb = mem.total // (1024**3)
+
+            cpu_count = psutil.cpu_count(logical=True)
+            cpu_physical = psutil.cpu_count(logical=False)
+            cpu_freq = psutil.cpu_freq()
+
+            # Recomendações baseadas em RAM
+            if mem_total_gb < 16:
+                recommendations.append("⚠️ RAM baixa (<16GB): Considere upgrade para 32GB+ para melhor performance em CS2")
+            elif mem_total_gb >= 32:
+                recommendations.append("✅ RAM adequada (>=32GB): Ótimo para CS2 com alta qualidade")
+            else:
+                recommendations.append(f"✅ RAM: {mem_total_gb}GB disponível")
+
+            # Recomendações baseadas em velocidade de RAM
+            try:
+                c = wmi.WMI()
+                for memory in c.Win32_PhysicalMemory():
+                    if memory.Speed and memory.Speed >= 3600:
+                        recommendations.append(f"✅ RAM rápida ({memory.Speed}MHz): Excelente para CS2")
+                    elif memory.Speed and memory.Speed >= 3000:
+                        recommendations.append(f"ℹ️ RAM moderada ({memory.Speed}MHz): Bom para CS2")
+                    break
+            except:
+                pass
+
+            # Recomendações baseadas em CPU
+            if cpu_physical < 4:
+                recommendations.append("⚠️ CPU com poucos cores (<4): Pode limitar performance em CS2")
+            elif cpu_physical >= 8:
+                recommendations.append(f"✅ CPU multi-core ({cpu_physical} cores): Excelente para CS2")
+            else:
+                recommendations.append(f"ℹ️ CPU: {cpu_physical} cores físicos")
+
+            # Recomendações baseadas em frequência de CPU
+            if cpu_freq and cpu_freq.max >= 4500:
+                recommendations.append(f"✅ CPU rápida ({cpu_freq.max/1000:.1f}GHz): Ótimo para frametime")
+            elif cpu_freq:
+                recommendations.append(f"ℹ️ Frequência CPU: {cpu_freq.max/1000:.1f}GHz")
+
+            # Recomendações gerais para CS2
+            recommendations.append("🎯 Foco em frametime: Priorize tweaks que reduzam stuttering")
+            recommendations.append("🌐 Rede: Configure TCP NoDelay e desabilite offloading")
+            recommendations.append("⚡ Energia: Use plano 'Alto Desempenho' sempre")
+            recommendations.append("🎮 GPU: Garanta drivers atualizados e otimizações habilitadas")
+            recommendations.append("💾 SSD: Armazene CS2 em SSD para reduzir stuttering de I/O")
+
+        except Exception:
+            recommendations.append("Erro ao gerar recomendações")
+
+        return "\n".join(recommendations)
+
+    def optimize_cpu_for_cs2(self):
+        """Otimiza configurações de CPU para CS2."""
+        if sys.platform.startswith("win"):
+            try:
+                # Ajusta afinidade de CPU para CS2 (usa todos os cores)
+                cs2_processes = self._find_cs2_processes()
+                if cs2_processes:
+                    cpu_mask = (1 << psutil.cpu_count(logical=True)) - 1
+                    for process in cs2_processes:
+                        try:
+                            process.cpu_affinity(list(range(psutil.cpu_count(logical=True))))
+                        except Exception:
+                            pass
+
+                # Tweaks de CPU
+                os.system(
+                    'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\PriorityControl" '
+                    "/v Win32PrioritySeparation /t REG_DWORD /d 38 /f"
+                )
+
+                # Desabilita core parking
+                os.system(
+                    'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Power\\PowerSettings\\54533251-82be-4824-96c1-47b60b740d00\\0cc5b647-c1df-4637-891a-dec35c318583" '
+                    "/v ValueMax /t REG_DWORD /d 0 /f"
+                )
+
+            except Exception as e:
+                raise Exception(f"Erro ao otimizar CPU: {str(e)}")
+
+    def optimize_gpu_for_cs2(self):
+        """Otimiza configurações de GPU para CS2."""
+        if sys.platform.startswith("win"):
+            try:
+                # Para NVIDIA
+                try:
+                    # Define perfil preferencial para jogos
+                    os.system(
+                        'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers" '
+                        '/v "HwSchMode" /t REG_DWORD /d 2 /f'
+                    )
+
+                    # Desabilita V-sync global
+                    os.system(
+                        'reg add "HKCU\\Software\\NVIDIA Corporation\\Global\\OpenGL" '
+                        '/v "ForceEnableVSync" /t REG_DWORD /d 0 /f'
+                    )
+
+                    # Ativa shader cache
+                    try:
+                        os.system(
+                            'reg add "HKCU\\Software\\NVIDIA Corporation\\NvControlPanel2\\Client" '
+                            '/v "ShaderCache" /t REG_DWORD /d 1 /f'
+                        )
+                    except:
+                        pass
+
+                    # Reduz pre-rendered frames para menor latência
+                    os.system(
+                        'reg add "HKCU\\Software\\NVIDIA Corporation\\Global" '
+                        '/v "FXAA" /t REG_DWORD /d 1 /f'
+                    )
+
+                except Exception:
+                    pass
+
+                # Desabilita V-sync global via DirectX
+                os.system(
+                    'reg add "HKCU\\Software\\Microsoft\\DirectX" '
+                    '/v "ForceTripleBuffering" /t REG_DWORD /d 0 /f'
+                )
+
+                # Para AMD/Intel - aumenta performance
+                os.system(
+                    'reg add "HKLM\\SOFTWARE\\Microsoft\\DirectX" '
+                    '/v "D3D12MaxGPUPerf" /t REG_DWORD /d 1 /f'
+                )
+
+            except Exception as e:
+                raise Exception(f"Erro ao otimizar GPU: {str(e)}")
+
+    def optimize_ram_for_cs2(self):
+        """Otimiza gerenciamento de RAM para jogos."""
+        if sys.platform.startswith("win"):
+            try:
+                # Aumenta limite de cache do sistema
+                os.system(
+                    'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management" '
+                    "/v LargeSystemCache /t REG_DWORD /d 1 /f"
+                )
+
+                # Desabilita page file automático
+                os.system(
+                    'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management" '
+                    "/v DisablePagingExecutive /t REG_DWORD /d 1 /f"
+                )
+
+                # Limpa RAM standby
+                self._clear_standby_list()
+
+            except Exception as e:
+                raise Exception(f"Erro ao otimizar RAM: {str(e)}")
+
+    def optimize_network_for_cs2(self):
+        """Otimiza rede para baixa latência."""
+        if sys.platform.startswith("win"):
+            try:
+                # Aplica todos os tweaks de rede
+                self.tweak_disable_offload()
+                self.tweak_tcp_nodelay()
+
+                # Configurações adicionais para jogos
+                os.system(
+                    'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters" '
+                    "/v DefaultTTL /t REG_DWORD /d 64 /f"
+                )
+
+                os.system(
+                    'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters" '
+                    "/v TcpMaxDataRetransmissions /t REG_DWORD /d 3 /f"
+                )
+
+                # Aumenta janela TCP para melhor throughput
+                os.system(
+                    'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters" '
+                    "/v TcpWindowSize /t REG_DWORD /d 65535 /f"
+                )
+
+                # Aumenta MTU para pacotes maiores
+                os.system(
+                    'netsh int ipv4 set subinterface "Ethernet" mtu=1500 store=persistent'
+                )
+
+                # Desabilita SACK se estiver habilitado (pode aumentar latência em redes de jogos)
+                try:
+                    os.system(
+                        'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters" '
+                        "/v SackOpts /t REG_DWORD /d 1 /f"
+                    )
+                except:
+                    pass
+
+            except Exception as e:
+                raise Exception(f"Erro ao otimizar rede: {str(e)}")
+
+    def apply_system_tweaks_for_cs2(self):
+        """Aplica tweaks gerais do sistema para CS2."""
+        if sys.platform.startswith("win"):
+            try:
+                # Aplica modo zero input lag
+                self.tweak_zero_input_lag()
+
+                # Tweaks adicionais para frametime
+                os.system(
+                    'reg add "HKCU\\Control Panel\\Desktop" /v "MenuShowDelay" '
+                    "/t REG_SZ /d 0 /f"
+                )
+
+                # Desabilita Windows Defender real-time (temporariamente)
+                os.system('powershell -Command "Set-MpPreference -DisableRealtimeMonitoring $true"')
+
+                # Otimiza frequência de CPU
+                self.optimize_cpu_frequency_for_cs2()
+
+                # Otimiza timer resolution
+                self.tweak_timer_resolution()
+
+            except Exception as e:
+                raise Exception(f"Erro ao aplicar tweaks: {str(e)}")
+
+    def optimize_cpu_frequency_for_cs2(self):
+        """Força CPU a rodar em máxima frequência, desabilitando dynamic scaling."""
+        if sys.platform.startswith("win"):
+            try:
+                # Define plano de energia para máximoesenpenho
+                os.system("powercfg /s SCHEME_MIN")
+
+                # Força CPU a 100% de frequência (desabilita throttling)
+                os.system("powercfg /change processor-throttling-ac 100")
+                os.system("powercfg /change processor-throttling-dc 100")
+
+            except Exception as e:
+                raise Exception(f"Erro ao otimizar frequência de CPU: {str(e)}")
+
+    def tweak_timer_resolution(self):
+        """Aumenta timer resolution do sistema para melhor precisão de frametime."""
+        if sys.platform.startswith("win"):
+            try:
+                # Tenta usar timeBeginPeriod via PowerShell
+                os.system(
+                    'powershell -Command "'
+                    '$Signature = @"'
+                    '[DllImport(\\\\"winmm.dll\\\\", SetLastError = $true)]'
+                    'public static extern uint timeBeginPeriod(uint uPeriod);'
+                    '[DllImport(\\\\"winmm.dll\\\\", SetLastError = $true)]'
+                    'public static extern uint timeEndPeriod(uint uPeriod);'
+                    '"@'
+                    '$TimerResolution = Add-Type -MemberDefinition $Signature -Name TimerResolution -Namespace Win32 -PassThru;'
+                    '$TimerResolution::timeBeginPeriod(1);'
+                    '"'
+                )
+
+                # Fallback: aumenta taxa de interrupções via registro
+                os.system(
+                    'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Beep" '
+                    "/v Start /t REG_DWORD /d 3 /f"
+                )
+
+            except Exception as e:
+                raise Exception(f"Erro ao aumentar timer resolution: {str(e)}")
+
+    def apply_cs2_optimizations(self):
+        """Aplica otimizações CS2 selecionadas."""
+        selected = [name for name, var in self.cs2_tweaks_vars.items() if var.get()]
+
+        if not selected:
+            messagebox.showwarning("Aviso", "Selecione pelo menos uma otimização CS2.")
+            return
+
+        results = []
+        for opt_name in selected:
+            try:
+                opt_func = self.cs2_tweaks_config[opt_name]["func"]
+                opt_func()
+                results.append(f"✓ {opt_name}: Sucesso")
+            except Exception as e:
+                results.append(f"✗ {opt_name}: Erro - {str(e)}")
+
+        messagebox.showinfo("Resultado Otimizações CS2", "\n".join(results))
 
     def refresh_system_metrics(self):
         """Atualiza métricas de CPU, memória, boot e atividade de buffers.
