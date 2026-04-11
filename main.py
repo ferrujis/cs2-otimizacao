@@ -520,6 +520,13 @@ class AlcesBoostApp(ctk.CTk):
     def _auto_update_drivers(self):
         """Verifica e baixa drivers desatualizados de forma automática."""
         try:
+            # Inicializa COM para uso em thread
+            try:
+                import pythoncom
+                pythoncom.CoInitialize()
+            except ImportError:
+                pass
+
             messagebox.showinfo("Atualização de Drivers", "Verificando drivers desatualizados...\nIsso pode levar alguns minutos.")
 
             available_updates = self._check_for_driver_updates()
@@ -568,6 +575,13 @@ class AlcesBoostApp(ctk.CTk):
         available_updates = []
 
         try:
+            # Inicializa COM para WMI em thread
+            try:
+                import pythoncom
+                pythoncom.CoInitialize()
+            except ImportError:
+                pass
+
             c = wmi.WMI()
 
             # Verificar GPU drivers
