@@ -230,7 +230,8 @@ class AlcesBoostApp(ctk.CTk):
         # Inner frame para melhor layout
         inner_frame = ctk.CTkFrame(header, fg_color="transparent")
         inner_frame.pack(fill="both", expand=True, padx=10, pady=8)
-        inner_frame.grid_columnconfigure([0, 1], weight=[0, 1])
+        inner_frame.grid_columnconfigure(0, weight=0)
+        inner_frame.grid_columnconfigure(1, weight=1)
 
         # Logo
         logo_path = self.base_dir / "logo.png"
