@@ -87,6 +87,14 @@ A opção `--uac-admin` faz com que o Windows solicite ao usuário elevação de
 
 Ou use o script `build_alcesboost.bat` no Windows.
 
+### Build limpo
+
+Para um build limpo que remove artefatos antigos e ignora o pacote inválido `platform` no `requirements.txt`, use:
+
+```powershell
+.uild_alcesboost_clean.bat
+```
+
 ## Observações
 
 - **Drivers Atualizados**: Mantenha drivers de GPU sempre atualizados para melhor performance no CS2

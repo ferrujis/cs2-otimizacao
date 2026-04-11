@@ -83,17 +83,29 @@ class AlcesBoostApp(ctk.CTk):
 
         self.style = Style()
 
-        # Calcula fator de escala baseado na resolução da tela
+        # Calcula fator de escala e define tamanho inicial responsivo
+        screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         self.style.calculate_scale_factor(screen_height)
 
         self.title("alcesboost")
-        # Reduz tamanho mínimo para permitir resoluções mais baixas
-        self.minsize(800, 600)
-        self.geometry("1000x720")
+        max_width = max(640, screen_width - 40)
+        max_height = max(480, screen_height - 80)
+        default_width = min(1000, max_width)
+        default_height = min(720, max_height)
+
+        self.geometry(f"{default_width}x{default_height}")
+        self.minsize(min(800, max_width), min(600, max_height))
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+
         self.configure(fg_color=self.style.colors["bg"])
         self.base_dir = Path(__file__).resolve().parent
         self.header_logo = None
+        self.fullscreen = False
+        self.bind("<F11>", self.toggle_fullscreen)
+        self.bind("<Escape>", self.exit_fullscreen)
+        self.bind("<Configure>", self.on_window_resize)
         self._set_app_icon()
 
         self.check_admin()
@@ -138,13 +150,13 @@ class AlcesBoostApp(ctk.CTk):
             pass
 
     def create_widgets(self):
-        root = ctk.CTkFrame(self, fg_color=self.style.colors["bg"], corner_radius=0)
-        root.pack(fill="both", expand=True, padx=10, pady=10)
+        self.root = ctk.CTkFrame(self, fg_color=self.style.colors["bg"], corner_radius=0)
+        self.root.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
 
-        self._build_header(root)
+        self._build_header(self.root)
 
         tabview = ctk.CTkTabview(
-            root,
+            self.root,
             fg_color=self.colors["panel"],
             border_color=self.colors["gold_dark"],
             border_width=1,
@@ -159,7 +171,26 @@ class AlcesBoostApp(ctk.CTk):
         tabview.pack(fill="both", expand=True)
         tabview.add("Hardware & CS2 Otimização")
 
-        self.setup_hardware_tab(tabview.tab("Hardware & CS2 Otimização"))
+        content_frame = ctk.CTkScrollableFrame(tabview.tab("Hardware & CS2 Otimização"), fg_color="transparent")
+        content_frame.pack(fill="both", expand=True)
+        content_frame.grid_columnconfigure(0, weight=1)
+
+        self.setup_hardware_tab(content_frame)
+
+    def toggle_fullscreen(self, event=None):
+        self.fullscreen = not self.fullscreen
+        self.attributes("-fullscreen", self.fullscreen)
+
+    def exit_fullscreen(self, event=None):
+        if self.fullscreen:
+            self.fullscreen = False
+            self.attributes("-fullscreen", False)
+
+    def on_window_resize(self, event):
+        if event.widget is self and hasattr(self, "root"):
+            width = max(640, event.width)
+            padding = self.style.get_responsive_padding(10, width)
+            self.root.grid_configure(padx=padding, pady=padding)
 
     def _build_header(self, parent):
         header = ctk.CTkFrame(
@@ -295,6 +326,8 @@ class AlcesBoostApp(ctk.CTk):
 
     def setup_hardware_tab(self, frame):
         """Aba para detecção de hardware e otimização CS2 baseada no hardware."""
+        frame.grid_columnconfigure(0, weight=1)
+
         # Painel de detecção de hardware
         hardware_panel = self._styled_panel(frame)
         hardware_panel.pack(fill="x", padx=12, pady=(12, 8))
